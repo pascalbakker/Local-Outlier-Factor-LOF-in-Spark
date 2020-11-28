@@ -15,6 +15,7 @@ import java.io.File
 import scala.util.Random
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.{Vectors, Vector => Vec}
+import breeze.plot._
 
 object Main extends App{
   /*
@@ -34,11 +35,11 @@ object Main extends App{
     writer.close()
   }
 
-  // Generate and write.
-  def generateNewData(file_path: String):
-  Unit = {
-    val data = generateDataset(new Random(1), 20, 2, 100) //Generate 100 rows of data of 2 columns
-    writeToDisk(data,file_path)
+  /* PLOTTING FUNCTIONS */
+  def plotInitialData(data: List[(Int,Int)]) = {
+      val fig = Figure()
+      val plt = fig.subplot(0)
+      plt += scatter(x=data.map(_._1),y=data.map(_._2), { _ => 0.1 } )
   }
 
   /*
@@ -94,7 +95,7 @@ object Main extends App{
     kneighbors
   }
 
-  // TODO neighborhoodReverseRDD (dID, Array(neighborID, dist)) => (neighborID, Array(dId,distance))
+  // neighborhoodReverseRDD (dID, Array(neighborID, dist)) => (neighborID, Array(dId,distance))
   def neighborhoodReverse(data: RDD[(Long,Array[(Long, Double)])]):
   RDD[(Long,Iterable[(Long,Double)])] = {
     val reversedRDD = data.flatMap{
@@ -105,7 +106,7 @@ object Main extends App{
     reversedRDD
   }
 
-  // TODO kDistance (dID, Array(neighborID, dist)) => (dID, kDist)
+  // kDistance (dID, Array(neighborID, dist)) => (dID, kDist)
   def kDistance(data: RDD[(Long,Array[(Long, Double)])], k: Int):
   RDD[(Long,Double)] =  {
     val kDistance = data.mapPartitions(iterable => {
@@ -117,7 +118,7 @@ object Main extends App{
     kDistance
   }
 
-  // TODO lrd (reversedRDD, kDistanceRDD) => (dID, Double)
+  // lrd (reversedRDD, kDistanceRDD) => (dID, Double)
   def lrd(kDistanceRDD: RDD[(Long,Double)], reverseRDD: RDD[(Long,Iterable[(Long,Double)])], k: Int):
   RDD[(Long,Double)] = {
     val joined = kDistanceRDD.join(reverseRDD)
@@ -137,53 +138,24 @@ object Main extends App{
     lrdRDD
   }
 
-  // TODO lofRDD
-  // dID, lrd
-  // dID, Array[(neighborID, distanceToNeighbor)]
-  /*
   def lof(lrdRDD: RDD[(Long,Double)], reverseRDD: RDD[(Long,Iterable[(Long,Double)])]): RDD[(Long,Double)] = {
-     val joinedLeft = lrdRDD.leftOuterJoin(reverseRDD)
-     val mappedLOFFlat = joinedLeft.flatMap{
-          case (neighborID: Long, v: (Double,Option[Iterable[(Long, Double)]])) => {
-          (dID,)
-       }
-     }
-
-
-
-
-
-
-
-
-
-     val mappedLOF = joinedLeft.mapPartitions{ iterator => {
-        iterator.map{
-          case (neighborID: Long, v: (Double,Option[Iterable[(Long, Double)]])) => {
-            v._2 match {
-              case Some(x) => x.map( dID_dist => {
-                (dID_dist._1, (v._1, 1))
-              }
-              ).toArray
-              case None => None
-            }
-          }
-        }
-     }}
-     val reducedLOF  = mappedLOF.groupByKey().map{
-       case (idx: Long, iter: Iterable[(Long, Double)]) => {
-          val lrd = iter.find(_._1 == idx).get._2
-          val sum = iter.filter(_._1 != idx).map(_._2).sum
-          (idx, sum / lrd / (iter.size - 1))
-       }
-     }
-     reducedLOF
+    val joined = reverseRDD.join(lrdRDD).mapValues{
+      case (distances, lrd) => {
+          val lrdList = distances.map{
+            case (index, _) => (index, lrd)
+          }.toArray
+          lrdList.map(_._2).sum / lrdList.length
+      }
     }
-*/
+    joined
+  }
+
   override def main(args: Array[String]) = {
     val k = 3
     val data_location = "data/data.csv"
-    generateNewData(data_location)
+    val data = generateDataset(new Random(1), 20, 2, 100) //Generate 100 rows of data of 2 columns
+    //generateNewData(data_location)
+    plotInitialData(data.toList.map{case List(a,b) => (a,b)})
     val spark: SparkSession = SparkSession.builder()
         .master("local")
         .appName("LOF")
@@ -196,12 +168,11 @@ object Main extends App{
     val kdistanceRDD = kDistance(kneighbors,k)
     // Final
     val lrdRDD = lrd(kdistanceRDD, neighborhoodReverseRDD,k)
-    //val lofRDD = lof(lrdRDD, neighborhoodReverseRDD)
-    val toStringRDD = lrdRDD.map(_.toString())
+    val lofRDD = lof(lrdRDD, neighborhoodReverseRDD)
+    val toStringRDD = lofRDD.map(_.toString())
     //lofRDD.map(_.toString())
     //kneighbors.map(_.toString()).saveAsTextFile("data/kneighbors.txt")
     toStringRDD.saveAsTextFile("data/lrd.txt")
     spark.sparkContext.stop()
-
   }
 }
