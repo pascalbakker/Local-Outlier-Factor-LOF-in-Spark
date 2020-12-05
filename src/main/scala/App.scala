@@ -61,8 +61,8 @@ object Main extends App{
       val fig = Figure()
       val plt = fig.subplot(0)
       plt += scatter(x=data.map(_._1),y=data.map(_._2), { _ => 0.1 } )
-
       // Plot results with color
+
   }
 
   /*
@@ -76,6 +76,78 @@ object Main extends App{
   // euclidian distance
   def distance(v1: Vec, v2: Vec):
   Double = math.sqrt(Vectors.sqdist(v1,v2))
+
+
+def combineNeighborhood(
+      first: Array[(Long, Double)],
+      second: Array[(Long, Double)]): Array[(Long, Double)] = {
+
+    val minPts = 3
+    var pos1 = 0
+    var pos2 = 0
+    var count = 0 // the size of distinct instances
+    val combined = new ArrayBuffer[(Long, Double)]()
+
+    while (pos1 < first.length && pos2 < second.length && count < minPts) {
+        if (first(pos1)._2 == second(pos2)._2) {
+          combined.append(first(pos1))
+          pos1 += 1
+          if (combined.length == 1) {
+            count += 1
+          } else {
+            if (combined(combined.length - 1) != combined(combined.length - 2)) {
+              count += 1
+            }
+          }
+          combined.append(second(pos2))
+          pos2 += 1
+        } else {
+          if (first(pos1)._2 < second(pos2)._2) {
+            combined.append(first(pos1))
+            pos1 += 1
+          } else {
+            combined.append(second(pos2))
+            pos2 += 1
+          }
+          if (combined.length == 1) {
+            count += 1
+          } else {
+            if (combined(combined.length - 1) != combined(combined.length - 2)) {
+              count += 1
+            }
+          }
+        }
+    }
+
+    while (pos1 < first.length && count < minPts) {
+      combined.append(first(pos1))
+      pos1 += 1
+      if (combined.length == 1) {
+        count += 1
+      } else {
+        if (combined(combined.length - 1) != combined(combined.length - 2)) {
+          count += 1
+        }
+      }
+    }
+
+    while (pos2 < second.length && count < minPts) {
+      combined.append(second(pos2))
+      pos2 += 1
+      if (combined.length == 1) {
+        count += 1
+      } else {
+        if (combined(combined.length - 1) != combined(combined.length - 2)) {
+          count += 1
+        }
+      }
+    }
+
+    combined.toArray
+  }
+
+
+
 
   // Map job for neighborhoods
   def mapNeighborhoods(data: Array[(Long,Vec)], target: (Long,Vec), k: Int):
@@ -114,7 +186,7 @@ object Main extends App{
           val merged =neighborhood1.sortBy(- _._2).slice(0,k-1) ++ neighborhood2.sortBy(- _._2).slice(0,k-1)
           merged.sortBy(- _._2).slice(0,k-1)
         }
-      val combinedNeighborhoods = neighborhoodsMapped.reduceByKey(reduceNeighborhoods)
+      val combinedNeighborhoods = neighborhoodsMapped.reduceByKey(combineNeighborhood)
       combinedNeighborhoods
     }.reduce(_.union(_))
     kneighbors
@@ -143,6 +215,38 @@ object Main extends App{
     kDistance
   }
 
+
+  def test(neighborhoodRDD: RDD[(Long,Array[(Long,Double)])], swappedRDD: RDD[(Long,Iterable[(Long,Double)])], k: Int): RDD[(Long,Double)] = {
+     val localOutlierFactorRDD = swappedRDD.cogroup(neighborhoodRDD)
+      .flatMap { case (outIdx: Long,
+      (k: Iterable[Iterable[(Long, Double)]], v: Iterable[Array[(Long, Double)]])) =>
+        require(k.size == 1 && v.size == 1)
+        val kDistance = v.head.last._2
+        k.head.filter(_._1 != outIdx).map { case (inIdx: Long, dist: Double) =>
+          (inIdx, (outIdx, Math.max(dist, kDistance)))
+        }
+      }.groupByKey().map { case (idx: Long, iter: Iterable[(Long, Double)]) =>
+        val num = iter.size
+        val sum = iter.map(_._2).sum
+        (idx, num / sum)
+      }.cogroup(swappedRDD).flatMap {
+        case (outIdx: Long, (k: Iterable[Double], v: Iterable[Iterable[(Long, Double)]])) =>
+          require(k.size == 1 && v.size == 1)
+          val lrd = k.head
+          v.head.map { case (inIdx: Long, dist: Double) =>
+            (inIdx, (outIdx, lrd))
+          }
+      }.groupByKey().map { case (idx: Long, iter: Iterable[(Long, Double)]) =>
+        require(iter.exists(_._1 == idx))
+        val lrd = iter.find(_._1 == idx).get._2
+        val sum = iter.filter(_._1 != idx).map(_._2).sum
+        (idx, sum / lrd / (iter.size - 1))
+      }
+    localOutlierFactorRDD
+  }
+
+
+
   // lrd (reversedRDD, kDistanceRDD) => (dID, Double)
   def lrd(kDistanceRDD: RDD[(Long,Double)], reverseRDD: RDD[(Long,Iterable[(Long,Double)])], k: Int):
   RDD[(Long,Double)] = {
@@ -156,13 +260,20 @@ object Main extends App{
           (neighborID, reachDistance)
         }
       }
+    }.groupByKey().map { case (idx: Long, iter: Iterable[(Long, Double)]) =>
+      val num = iter.size
+      val sum = iter.map(_._2).sum
+      (idx, num / sum)
     }
+    lrdRDD
     // Reduce
+    /*
     val lrdReduced = lrdRDD.groupByKey().map{
       case (dID: Long, v: Iterable[Iterable[(Long,Double)]]) => {
         val lrdValues = v.map{ x => {
-            val valLength = x.size
-            val sum = x.map(_._2).sum
+            val y = x.filter(_._1 != dID)
+            val valLength = y.size
+            val sum = y.map(_._2).sum
             (valLength,sum)
           }
         }.foldLeft(0d,0d){case ((accumA, accumB),(a,b)) => (accumA+a,accumB+b)}
@@ -170,6 +281,7 @@ object Main extends App{
       }
     }
     lrdReduced
+    */
   }
 
   def neighborAverage(reverseRDD: RDD[(Long,Iterable[(Long,Double)])], lrdRDD: RDD[(Long,Double)]):
@@ -195,43 +307,61 @@ object Main extends App{
     // parallel
     // Inverses the RDD for use in algorithm. See chart.
     val neighborhoodReverseRDD = neighborhoodReverse(kneighbors)
+    /*
     // Finds the k distance of each vector
     val kdistanceRDD = kDistance(kneighbors,k)
     // Final
     val lrdRDD = lrd(kdistanceRDD, neighborhoodReverseRDD,k)
     val averageLRDNeighborhoodRDD = neighborAverage(neighborhoodReverseRDD, lrdRDD)
-
-    averageLRDNeighborhoodRDD
+    */
+    val results = test(kneighbors,neighborhoodReverseRDD,k)
+    results
   }
 
+  def removeResults(): Unit = {}
+
+
+  def toStringRDD(rdd: RDD[(A,B)]): RDD[String] = {
+      rdd.map{
+        case (a:Long,b:Double) => a.toString +","+b.toString
+        case (a: Long, b:Array[(C,D)]) => {
+            val arrayString = b.map{
+              case (x: Long, y: Double) => "(" + x.toString + "," + y.toString +  ")"
+            }
+            a.toString + " [" + arrayString + "]"
+        }
+      }
+  }
   override def main(args: Array[String]) = {
-    val k = 3
+    val k = 100
     val data_location = "data/data.csv"
     //val data = generateDataset(new Random(1), 20, 2, 100) //Generate 100 rows of data of 2 columns
     //writeToDisk(data,data_location)
     val data = generateDataForTesting()
-    plotInitialData(data)
+    //plotInitialData(data)
     val spark: SparkSession = SparkSession.builder()
         .master("local")
         .appName("LOF")
         .getOrCreate()
 
-    // Prepares the RDD for LOF
+
     val rdd_string = spark.sparkContext.textFile(data_location)
     val rdd_vector = preprocess(rdd_string)
-    val lofRDD = lof(spark, rdd_vector, 3)
+    // Prepares the RDD for LOF
+    val lofRDD = lof(spark, rdd_vector, k)
 
     // Save result
-    val toStringlofRDD = lofRDD.map(_.toString())
+    val toStringlofRDD = lofRDD.map{
+      case(a,b) => a.toString +","+b.toString
+    }
     toStringlofRDD.saveAsTextFile("data/results/lof.txt")
 
     spark.sparkContext.stop()
-
-    /* FOR TESTING
-    val toStringVECTORDD = rdd_vector.map(_.toString())
+    /*
+    val toStringVECTORDD = data.map(_.toString())
 
     // Finds the KNN for the RDD
-    val kneighbors = neighborhood(spark,  rdd_vector,k)
+    val kneighbors = neighborhood(spark, data, k)
     val toStringKRDD = kneighbors.map{
       case (dID, arrayValues) => {
         val stringArray = arrayValues.map{
@@ -278,6 +408,7 @@ object Main extends App{
     toStringLRDRDD.saveAsTextFile("data/results/lrd.txt")
     toStringlofRDD.saveAsTextFile("data/results/lof.txt")
     //toStringRDD.saveAsTextFile("data/results/lof.txt")
+    spark.sparkContext.stop()
     */
   }
 }

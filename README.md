@@ -35,3 +35,12 @@ Data is read from data/data.csv
 	2. Test with large dataset (>=100MB) and benchmark results
 	3. Create plot with data.csv color coded with results. (if data has LOF >= 1 then color red else color green)
 	4. Add different types of distance calculations such as Jacardian(Low Priority)
+
+
+### Documentation
+
+Get LOF above 1
+	awk -F, 'gsub(/[()]/,"") && $2 >= 1.0 {print $1, $2}' data/results/lof.txt/part-00000
+
+Get Number of Points who are anomolies
+	awk -F, 'gsub(/[()]/,"") && $2 >= 1.0 {print $1, $2}' data/results/lof.txt/part-00000 | wc -l
