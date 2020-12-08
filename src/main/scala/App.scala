@@ -58,6 +58,11 @@ object Main extends App{
     data
   }
 
+  def removeResults(): Unit = {
+    val directory = new Directory(new File("data/results/"))
+    directory.deleteRecursively()
+  }
+
   /* PLOTTING FUNCTIONS */
   def plotInitialData(data: List[(Double,Double)]) = {
       // plot original scatter plot of data
@@ -65,7 +70,6 @@ object Main extends App{
       val plt = fig.subplot(0)
       plt += scatter(x=data.map(_._1),y=data.map(_._2), { _ => 0.1 } )
       // Plot results with color
-
   }
 
   /*
@@ -259,13 +263,8 @@ def combineNeighborhood(
 
   def apply(spark:SparkSession, rdd_vector: RDD[(Long,Vec)], k:Int=3): RDD[(Long,Double)] = {
     val kneighbors = neighborhood(spark,  rdd_vector,k)
-    val neighborhoodReverseRDD = neighborhoodReverse(kneighbors).persist()
-    /*
-    val reverse = neighborhoodReverseRDD.map{
-      case(a,b) => (a,b.toArray)
-    }
-    */
-    val lrdRDD = lrd(neighborhoodReverseRDD, kneighbors).persist()
+    val neighborhoodReverseRDD = neighborhoodReverse(kneighbors).cache()
+    val lrdRDD = lrd(neighborhoodReverseRDD, kneighbors)
     val averageLRDNeighborhoodRDD = neighborAverage(neighborhoodReverseRDD, lrdRDD)
     val lofRDD = lof(averageLRDNeighborhoodRDD,lrdRDD)
     // Write results
@@ -285,18 +284,27 @@ def combineNeighborhood(
     averageLRDNeighborhoodRDD
   }
 
-  def removeResults(): Unit = {
-    val directory = new Directory(new File("data/results/"))
-    directory.deleteRecursively()
-  }
-
 
   override def main(args: Array[String]) = {
+    if(args.length != 0){
+
+    }
     val k = 100
     val data_location = "data/data.csv"
+    val data = generateDataForTesting
+    var i = 0 ;
+    val writer1 = new BufferedWriter(new FileWriter("withindex.csv"))
+    data.map{
+      case(a,b) => {
+       val result = i.toString()+","+a.toString()+","+b.toString()+"\n"
+       i+=1
+       result
+      }
+    }.foreach(writer1.write(_))
+    writer1.close()
+
     removeResults()
-    //val data = generateDataset(new Random(1), 20, 2, 100) //Generate 100 rows of data of 2 columns
-    //writeToDisk(data,data_location)
+    writeToDisk(data,data_location)
     if(true){
       val data = generateDataForTesting()
     }
