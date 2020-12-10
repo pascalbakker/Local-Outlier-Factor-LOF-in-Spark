@@ -267,14 +267,16 @@ def combineNeighborhood(
     val neighborhoodReverseRDD = neighborhoodReverse(kneighbors).persist()
     val lrdRDD = lrd(neighborhoodReverseRDD, kneighbors)
     val averageLRDRDD = neighborAverage(neighborhoodReverseRDD, lrdRDD)
+    val lofRDD = rdd_vector.join(averageLRDRDD).map{
+        r => (r._1, r._2._1, r._2._2)
+    }
+
     //val lofRDD = lof(averageLRDNeighborhoodRDD,lrdRDD)
     // Write results
     // Convert to string
-    /*
     val toStringlofRDD = lofRDD.map{
-      case(a,b) => a.toString() + "," + b.toString()
+      r => r._2.toString+","+r._3.toString
     }
-    */
    val toStringaverageRDD = averageLRDRDD.map{
      case(a,b) => a.toString +","+b.toString
    }
@@ -282,8 +284,8 @@ def combineNeighborhood(
      case (neighborID: Long, lrd: Double) => neighborID.toString + "," + lrd.toString
    }
    toStringaverageRDD.saveAsTextFile("data/results/lof.txt")
-   toStringLRDRDD.saveAsTextFile("data/results/lrd.txt")
-   //toStringlofRDD.saveAsTextFile("data/results/lof.txt")
+   toStringLRDRDD.saveAsTextFile("data/results/lof.txt")
+   toStringlofRDD.saveAsTextFile("data/results/lofModified.txt")
    averageLRDRDD
   }
 
@@ -314,7 +316,7 @@ def combineNeighborhood(
                 require(iter.exists(_._1 == idx))
                 val lrd = iter.find(_._1 == idx).get._2
                 val sum = iter.filter(_._1 != idx).map(_._2).sum
-                (idx, sum / lrd / (iter.size - 1))
+                (idx, 1/(sum / lrd / (iter.size - 1)))
               }
               localOutlierFactorRDD
   }
