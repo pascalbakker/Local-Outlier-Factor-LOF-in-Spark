@@ -50,8 +50,8 @@ object Main extends App{
   def generateDataForTesting(): List[(Double,Double)]= {
     val filepath = "data/data.csv"
     val rand = new Random(1) // seed 1
-    val circle1 = generateInCircle(rand, 5d, 10d, 10d, 1000)
-    val circle2 = generateInCircle(rand, 20d, 100d, 100d, 1000)
+    val circle1 = generateInCircle(rand, 5d, 10d, 10d, 100)
+    val circle2 = generateInCircle(rand, 20d, 100d, 100d, 100)
     val circle3 = generateInCircle(rand, 20d, 50d, 50d, 10)
     //val circle4 = generateInCircle(rand,50d,50d,50d,20)
     val circle5 = generateInCircle(rand, 1d,110d,5d,1)
@@ -188,42 +188,41 @@ def combineNeighborhood(
       // COMBINE: all neighborhood
       def reduceNeighborhoods(neighborhood1: Array[(Long,Double)], neighborhood2: Array[(Long,Double)]):
       Array[(Long,Double)] = {
-          val merged =neighborhood1.sortBy(- _._2).slice(0,k-1) ++ neighborhood2.sortBy(- _._2).slice(0,k-1)
-          merged.sortBy(- _._2).slice(0,k-1)
+          val merged =neighborhood1.sortBy(_._2).slice(0,k+1) ++ neighborhood2.sortBy(_._2).slice(0,k+1)
+          merged.sortBy(_._2).slice(0,k+1)
         }
-      val combinedNeighborhoods = neighborhoodsMapped.reduceByKey(combineNeighborhood)
-      combinedNeighborhoods
+      val combinedNeighborhoods = neighborhoodsMapped.reduceByKey(reduceNeighborhoods)
+      combinedNeighborhoods.map{
+        case(a:Long, b: Array[(Long,Double)]) => {
+            (a, b.sortBy(_._2).slice(0,k+1))
+        }
+      }
     }.reduce(_.union(_))
     kneighbors
   }
 
   // neighborhoodReverseRDD (dID, Array(neighborID, dist)) => (neighborID, Array(dId,distance))
   def neighborhoodReverse(data: RDD[(Long,Array[(Long, Double)])]):
-  RDD[(Long,Array[(Long,Double)])] = {
-    val reversedRDD = data.flatMap{
-          case (dID: Long, neighborhood: Array[(Long,Double)]) => neighborhood.map{
-            case (neighborID: Long, distance: Double) => (neighborID,(dID,distance))
-          } :+ (dID, (dID,0d))
-    }.groupByKey()
-    reversedRDD.map{
-      case(a,b)=>(a,b.toArray)
-    }
+  RDD[(Long,Iterable[(Long,Double)])] = {
+    val reverse = data.flatMap {
+        case (outIdx: Long, neighborhood: Array[(Long, Double)]) =>
+      neighborhood.map { case (inIdx: Long, dist: Double) =>
+        (inIdx, (outIdx, dist))
+      } //:+ (outIdx, (outIdx, 0d))
+    }.groupByKey().persist()
+    reverse
   }
 
-  def lrdReduceByKey(p1: (Double,Int), p2: (Double, Int)): (Double, Int) = {
-      (p1._1 + p2._1, p1._2 + p2._2)
-  }
-
-  def lrd(neighborhoodReverseRDD: RDD[(Long,Array[(Long,Double)])], neighborhoodRDD: RDD[(Long,Array[(Long,Double)])]):
+  def lrd(neighborhoodReverseRDD: RDD[(Long,Iterable[(Long,Double)])], neighborhoodRDD: RDD[(Long,Array[(Long,Double)])]):
   RDD[(Long,Double)] = {
     val joined = neighborhoodReverseRDD.cogroup(neighborhoodRDD)
     joined.flatMap{
-      case (outIdx: Long, (k:Iterable[Array[(Long,Double)]], v: Iterable[Array[(Long,Double)]])) => {
+      case (outIdx: Long, (k:Iterable[Iterable[(Long,Double)]], v: Iterable[Array[(Long,Double)]])) => {
           require(k.size == 1 && v.size == 1)
           val kDistance = v.head.last._2
           k.head.filter(_._1 != outIdx).map{
             case(inIdx: Long, dist:Double) =>{
-                (inIdx, (outIdx,Math.max(dist,kDistance)))
+                (inIdx, (outIdx, Math.max(dist,kDistance)))
             }
           }
       }
@@ -234,11 +233,11 @@ def combineNeighborhood(
     }
   }
 
-  def neighborAverage(reverseRDD: RDD[(Long,Array[(Long,Double)])], lrdRDD: RDD[(Long,Double)]):
+  def neighborAverage(reverseRDD: RDD[(Long,Iterable[(Long,Double)])], lrdRDD: RDD[(Long,Double)]):
   RDD[(Long,Double)] = {
     val joined = lrdRDD.cogroup(reverseRDD)
     joined.flatMap {
-      case (outIdx: Long, ( k: Iterable[Double], v : Iterable[Array[(Long, Double)]])) =>
+      case (outIdx: Long, ( k: Iterable[Double], v : Iterable[Iterable[(Long, Double)]])) =>
         require(k.size == 1 && v.size == 1)
         val lrd = k.head
         v.head.map { case (inIdx: Long, dist: Double) =>
@@ -264,65 +263,45 @@ def combineNeighborhood(
 
   def apply(spark:SparkSession, rdd_vector: RDD[(Long,Vec)], k:Int=3): RDD[(Long,Double)] = {
     val kneighbors = neighborhood(spark,  rdd_vector,k)
-    val neighborhoodReverseRDD = neighborhoodReverse(kneighbors).persist()
-    val lrdRDD = lrd(neighborhoodReverseRDD, kneighbors)
-    val averageLRDRDD = neighborAverage(neighborhoodReverseRDD, lrdRDD)
-    val lofRDD = rdd_vector.join(averageLRDRDD).map{
-        r => (r._1, r._2._1, r._2._2)
-    }
+    kneighbors.map{
+      case(id:Long, array:Array[(Long,Double)]) =>{
+          val arrayString = array.map{
+            case(a,b) => "(" + a.toString+","+b.toString+")"
+          }
+          id.toString + "[" + arrayString.mkString(",") + "]\n"
+      }
+    }.saveAsTextFile("data/results/kneighbors")
 
-    //val lofRDD = lof(averageLRDNeighborhoodRDD,lrdRDD)
+    val neighborhoodReverseRDD = neighborhoodReverse(kneighbors).persist()
+    neighborhoodReverseRDD.map{
+      case(id:Long, array:Iterable[(Long,Double)]) =>{
+          val arrayString = array.map{
+            case(a,b) => "(" + a.toString+","+b.toString+")"
+          }
+          id.toString + "[" + arrayString.mkString(",") + "]"
+      }
+    }.saveAsTextFile("data/results/reverse")
+
+    val lrdRDD = lrd(neighborhoodReverseRDD, kneighbors)
+    lrdRDD.map{
+      case(a,b) => a.toString +","+b.toString+"\n"
+    }.saveAsTextFile("data/results/lrd")
+    val averageLRDRDD = neighborAverage(neighborhoodReverseRDD, lrdRDD)
+    averageLRDRDD.map{
+      case(a,b) => a.toString +","+b.toString+"\n"
+    }.saveAsTextFile("data/results/averagelrd")//val lofRDD = lof(averageLRDRDD,lrdRDD)
     // Write results
     // Convert to string
-    val toStringlofRDD = lofRDD.map{
-      r => r._2.toString+","+r._3.toString
-    }
-   val toStringaverageRDD = averageLRDRDD.map{
-     case(a,b) => a.toString +","+b.toString
-   }
-   val toStringLRDRDD = lrdRDD.map{
-     case (neighborID: Long, lrd: Double) => neighborID.toString + "," + lrd.toString
-   }
-   toStringaverageRDD.saveAsTextFile("data/results/lof.txt")
-   toStringLRDRDD.saveAsTextFile("data/results/lof.txt")
-   toStringlofRDD.saveAsTextFile("data/results/lofModified.txt")
+    val lofRDD = lof(averageLRDRDD, lrdRDD)
+    lofRDD.map{
+      case(a,b)=> a.toString+","+b.toString
+    }.saveAsTextFile("data/results/lof")
    averageLRDRDD
   }
 
 
-  def test(spark:SparkSession, rdd_vector: RDD[(Long,Vec)], k:Int = 3): RDD[(Long,Double)] = {
-    val neighborhoodRDD = neighborhood(spark, rdd_vector,k)
-    val swappedRDD = neighborhoodReverse(neighborhoodRDD)
-    val localOutlierFactorRDD = swappedRDD.cogroup(neighborhoodRDD)
-      .flatMap { case (outIdx: Long,
-        (k: Iterable[Array[(Long, Double)]], v: Iterable[Array[(Long, Double)]])) =>
-        require(k.size == 1 && v.size == 1)
-        val kDistance = v.head.last._2
-        k.head.filter(_._1 != outIdx).map { case (inIdx: Long, dist: Double) =>
-          (inIdx, (outIdx, Math.max(dist, kDistance)))
-        }
-        }.groupByKey().map { case (idx: Long, iter: Iterable[(Long, Double)]) =>
-          val num = iter.size
-          val sum = iter.map(_._2).sum
-          (idx, num / sum)
-          }.cogroup(swappedRDD).flatMap {
-            case (outIdx: Long, (k: Iterable[Double], v: Iterable[Array[(Long, Double)]])) =>
-              require(k.size == 1 && v.size == 1)
-              val lrd = k.head
-              v.head.map { case (inIdx: Long, dist: Double) =>
-                (inIdx, (outIdx, lrd))
-              }
-              }.groupByKey().map { case (idx: Long, iter: Iterable[(Long, Double)]) =>
-                require(iter.exists(_._1 == idx))
-                val lrd = iter.find(_._1 == idx).get._2
-                val sum = iter.filter(_._1 != idx).map(_._2).sum
-                (idx, 1/(sum / lrd / (iter.size - 1)))
-              }
-              localOutlierFactorRDD
-  }
-
   override def main(args: Array[String]) = {
-    val k = if(args.length != 0) args(0).toInt else 10
+    val k = if(args.length != 0) args(0).toInt else 50
     val data_location = "data/data.csv"
     val data = generateDataForTesting
     var i = 0 ;
@@ -352,10 +331,5 @@ def combineNeighborhood(
     val rdd_vector = preprocess(rdd_string)
     // Prepares the RDD for LOF
     val lofRDD = apply(spark, rdd_vector, k)
-    //val lofRDD = test(spark, rdd_vector, k)
-    val toStringlofRDD = lofRDD.map{
-      case(a,b) => a.toString() + "," + b.toString()
-    }
-    toStringlofRDD.saveAsTextFile("data/results/lof.txt")
   }
 }
